@@ -70,6 +70,11 @@ class WGet:
                 support['mark'] = 1
             except KeyError:
                 pass
+            if not support:
+                try:
+                    self.total = int(r.headers['content-length'])
+                except KeyError:
+                    pass
             return False
 
         self._download_file(self.download_url, headers=headers, callback=callback, chunk_size=5)
@@ -95,6 +100,9 @@ class WGet:
         while 1 and self.finish is False:
             try:
                 block_index = self.task_queue.get(block=True, timeout=0.01)
+                # 避免创建过多的临时文件
+                while block_index - self.next_need_to_merge_block_index > 10:
+                    time.sleep(0.1)
             except Queue.Empty:
                 return
 
@@ -189,9 +197,12 @@ class WGet:
         boss = threading.Thread(target=self.boss)
         merge = threading.Thread(target=self.merge)
         print "[+] 线程数量：{}".format(len(workers))
+        boss.daemon = True
         boss.start()
+        merge.daemon = True
         merge.start()
         for item in workers:
+            item.daemon = True
             item.start()
         while self.finish is False:
             time.sleep(0.1)
@@ -202,7 +213,7 @@ class WGet:
         if self.total == 0:
             p = None
         else:
-            p = round(float(now)/self.total, 1) * 100
+            p = round(float(now)/self.total, 2) * 100
         spend = time.time() - self.start_time
         speed = round((float(self.size) / 1024 / spend),2)
         sys.stdout.write('\rNow: {}, Total: {}, {}% | Time: {}s,  '
@@ -244,6 +255,19 @@ class WGet:
             self.p_size()
             self.normal_download()
 
+    @staticmethod
+    def parse_block_size(txt):
+        try:
+            num = int(re.search(r'(\d+)', txt).group(1))
+        except AttributeError:
+            print "block size value error"
+            sys.exit(1)
+        if re.search(r'm|M', txt):
+            return num * 1024 * 1024
+        if re.search(r'k|K', txt):
+            return num * 1024
+        return num
+
 if __name__ == '__main__':
     parser = OptionParser()
     parser.add_option("-u", "--url", dest="url",  
@@ -255,21 +279,28 @@ if __name__ == '__main__':
                     (KHTML, like Gecko) Chrome/40.0.2214.111 Safari/537.36')
     parser.add_option("-r", "--referer", dest="referer", 
             help="request referer")
-    parser.add_option("-c", "--cookie", dest="cookie", 
+    parser.add_option("-b", "--block-size", dest="block",
+                      help="block-size, default 10KB")
+    parser.add_option("-c", "--cookie", dest="cookie",
             help="request cookie", default = 'foo=1;')
     (options, args) = parser.parse_args()
+
     if not options.url:
         parser.print_help()
         sys.exit()
     if not options.filename:
         options.filename = options.url.split('/')[-1]
+    if not options.block:
+        block = 1024*10
+    else:
+        block = WGet.parse_block_size(options.block)
+
     headers = {
             'User-Agent': options.useragent,
             'Referer': options.referer if options.referer else options.url,
             'Cookie': options.cookie
             }
-    wget = WGet(headers=headers)
-
+    wget = WGet(headers=headers, block=block)
     def bye(s, frame):
         print("\nDownload Pause...")
         if wget.use_multi_thread:

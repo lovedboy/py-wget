@@ -1,4 +1,4 @@
-一个支持断点续传的小下载器：py-wget
+一个支持断点续传以及多线程下载的小下载器：py-wget
 
 依赖于requests：
 
@@ -12,7 +12,7 @@
  cd py-wget
  chmod u+x py-wget.py
  alias py-wget="`pwd`/py-wget.py"
- py-wget -u "http://www.emlog.net/em_download/emlog/emlog_5.3.1.zip"
+ py-wget -u "http://nginx.org/download/nginx-1.7.1.tar.gz"
 ```
 
 Have Fun~
