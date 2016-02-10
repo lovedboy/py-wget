@@ -10,18 +10,12 @@ import threading
 import signal
 
 
-def bye(s, frame):
-    print("\nDownload Pause...")
-    sys.exit(0)
-
-signal.signal(signal.SIGINT, bye)
-
-
 class WGet:
 
     def __init__(self, block=1024 * 10, headers={}):
         self.block = block
         self.total = 0
+        self.download_size = 0
         self.size = 0
         self.filename = ''
         self.task_queue = Queue.Queue(maxsize=100)
@@ -32,23 +26,27 @@ class WGet:
         self.start_time = None
         self.lock = threading.Lock()
         self.file_downloading = {}
+        self.finish = False
 
     @property
     def download_config(self):
         return "{}.config".format(self.filename)
 
     def load_download_config(self):
-
         if os.path.exists(self.download_config):
             with open(self.download_config, 'rb') as f:
                 config = json.loads(f.read())
                 self.next_need_to_merge_block_index = config['next_need_to_merge_block_index']
+                self.file_downloading = config['file_downloading']
                 self.block_index = self.next_need_to_merge_block_index
+        if os.path.exists(self.filename):
+            self.download_size = os.path.getsize(self.filename)
 
     def dump_download_config(self):
         with open(self.download_config, 'wb') as f:
             f.write(json.dumps({
                 "next_need_to_merge_block_index": self.next_need_to_merge_block_index,
+                "file_downloading": self.file_downloading,
             }))
 
     @staticmethod
@@ -77,7 +75,7 @@ class WGet:
         if self.total == 0:
             raise Exception("total size must be greater then 0 byte")
 
-        while self.block_index * self.block < self.total:
+        while self.finish is False and self.block_index * self.block < self.total:
             self.task_queue.put(self.block_index, block=True)
             self.block_index += 1
 
@@ -90,7 +88,7 @@ class WGet:
 
     def worker(self):
 
-        while 1:
+        while 1 and self.finish is False:
             try:
                 block_index = self.task_queue.get(block=True, timeout=0.01)
             except Queue.Empty:
@@ -101,7 +99,7 @@ class WGet:
     def _worker(self, block_index):
 
         file_path = "{}.{}.tmp".format(self.filename, block_index)
-        if os.path.exists(file_path):
+        if os.path.exists(file_path) and file_path not in self.file_downloading:
             pass
         else:
             headers = self.headers.copy()
@@ -130,7 +128,7 @@ class WGet:
 
         with open(self.filename, 'ab') as f:
 
-            while self.next_need_to_merge_block_index * self.block < self.total:
+            while self.finish is False and self.next_need_to_merge_block_index * self.block < self.total:
                 file_path = "{}.{}.tmp".format(self.filename, self.next_need_to_merge_block_index)
                 if os.path.exists(file_path) and self.file_downloading.has_key(file_path) is False:
                     ft = open(file_path, 'rb')
@@ -139,8 +137,11 @@ class WGet:
                     ft.close()
                     self.next_need_to_merge_block_index += 1
                     os.remove(file_path)
+
                 else:
                     time.sleep(0.1)
+
+            self.finish = True
 
     def normal_download(self):
 
@@ -169,45 +170,38 @@ class WGet:
 
     def determine_thread_num(self):
 
-        t = self.total / self.block - self.block_index
-        if t <= 3:
+        t = (self.total - self.download_size) / self.block - self.block_index
+        if t <= 5:
             return 1
-        elif t <= 5:
-            return 2
-        elif t <= 10:
-            return 3
         elif t <= 20:
-            return 5
+            return 3
         else:
-            return 8
+            return 5
 
     def multi_thread_download(self):
 
-        boss = threading.Thread(target=self.boss)
-        boss.start()
-        merge = threading.Thread(target=self.merge)
-        merge.start()
-
         workers = [threading.Thread(target=self.worker) for i in range(self.determine_thread_num())]
+        boss = threading.Thread(target=self.boss)
+        merge = threading.Thread(target=self.merge)
+        print "[+] 线程数量：{}".format(len(workers))
+        boss.start()
+        merge.start()
         for item in workers:
             item.start()
-
-        boss.join()
-        merge.join()
-        for item in workers:
-            item.join()
-
+        while self.finish is False:
+            time.sleep(0.1)
         print "\nDownload Finish"
 
     def pprint(self):
+        now = self.size + self.download_size
         if self.total == 0:
             p = None
         else:
-            p = int(float(self.size)/self.total) * 100
+            p = round(float(now)/self.total, 1) * 100
         spend = time.time() - self.start_time
         speed = round((float(self.size) / 1024 / spend),2)
         sys.stdout.write('\rNow: {}, Total: {}, {}% | Time: {}s,  '
-                         'Speed: {}k/s  '.format(self.size, self.total,p, round(spend,2), speed))
+                         'Speed: {}k/s  '.format(now, self.total,p, round(spend,2), speed))
         sys.stdout.flush()
 
     def p_size(self):
@@ -233,6 +227,8 @@ class WGet:
             self.load_download_config()
             try:
                 self.multi_thread_download()
+                if os.path.exists(self.download_config):
+                    os.remove(self.download_config)
             except:
                 self.dump_download_config()
                 raise
@@ -266,4 +262,11 @@ if __name__ == '__main__':
             'Cookie': options.cookie
             }
     wget = WGet(headers=headers)
+    def bye(s, frame):
+        print("\nDownload Pause...")
+        wget.dump_download_config()
+        wget.finish = True
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, bye)
     wget.download(options.url, options.filename)
