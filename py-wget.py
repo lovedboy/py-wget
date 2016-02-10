@@ -27,6 +27,7 @@ class WGet:
         self.lock = threading.Lock()
         self.file_downloading = {}
         self.finish = False
+        self.use_multi_thread = True
 
     @property
     def download_config(self):
@@ -49,27 +50,30 @@ class WGet:
                 "file_downloading": self.file_downloading,
             }))
 
-    @staticmethod
-    def remove_nonchars(name):
-        (name, _) = re.subn(ur'[\\\/\:\*\?\"\<\>\|]', '', name)
-        return name
-
     def support_continue(self, url):
+
         headers = {
-                'Range': 'bytes=0-4'
+                'Range': 'bytes=0-1'
                 }
-        try:
-            r = requests.head(url, headers = headers)
-            crange = r.headers['content-range']
-            self.total = int(re.match(ur'^bytes 0-4/(\d+)$', crange).group(1))
-            return True
-        except:
-            pass
-        try:
-            self.total = int(r.headers['content-length'])
-        except:
-            self.total = 0
-        return False
+
+        headers.update(self.headers)
+
+        support = {}
+
+        def callback(chunk, r):
+
+            if len(chunk) > 2:
+                return False
+            try:
+                content_range = r.headers['content-range']
+                self.total = int(re.match(ur'^bytes 0-1/(\d+)$', content_range).group(1))
+                support['mark'] = 1
+            except KeyError:
+                pass
+            return False
+
+        self._download_file(self.download_url, headers=headers, callback=callback, chunk_size=5)
+        return True if support else False
 
     def boss(self):
         if self.total == 0:
@@ -108,7 +112,7 @@ class WGet:
             self.file_downloading[file_path] = 1
             f = open(file_path, 'wb')
 
-            def callback(chunk):
+            def callback(chunk, *args):
                 f.write(chunk)
                 self.lock.acquire()
                 self.size += len(chunk)
@@ -137,7 +141,6 @@ class WGet:
                     ft.close()
                     self.next_need_to_merge_block_index += 1
                     os.remove(file_path)
-
                 else:
                     time.sleep(0.1)
 
@@ -147,7 +150,7 @@ class WGet:
 
         f = open(self.filename, 'wb')
 
-        def callback(chunk):
+        def callback(chunk, *args):
             f.write(chunk)
             self.size += len(chunk)
             self.pprint()
@@ -161,12 +164,14 @@ class WGet:
         print "\nDownload Finish"
 
     @staticmethod
-    def _download_file(url, headers={}, callback=None):
+    def _download_file(url, headers={}, callback=None, chunk_size=1024):
         r = requests.get(url, stream=True, headers=headers)
-        for chunk in r.iter_content(chunk_size=1024):
+        for chunk in r.iter_content(chunk_size=chunk_size):
             if chunk:
                 if callback is not None:
-                    callback(chunk)
+                    res = callback(chunk, r)
+                    if res is False:
+                        r.close()
 
     def determine_thread_num(self):
 
@@ -214,14 +219,16 @@ class WGet:
         self.start_time = time.time()
         self.download_url = url
         if filename is None:
-            self.filename = self.remove_nonchars(url)
+            self.filename = self.download_url.split('/')[-1]
         else:
             self.filename = filename
 
         if os.path.exists(self.filename) and os.path.exists(self.download_config) is False:
-            raise Exception("exists {}".format(self.filename))
+            print("exists {}".format(self.filename))
+            return
 
-        if self.support_continue(url):  # 支持断点续传
+        if self.support_continue(url) and self.total > 1024 * 512:  # 支持断点续传
+            self.use_multi_thread = True
             print "[+] 多线程下载..."
             self.p_size()
             self.load_download_config()
@@ -252,7 +259,7 @@ if __name__ == '__main__':
             help="request cookie", default = 'foo=1;')
     (options, args) = parser.parse_args()
     if not options.url:
-        print 'Missing url'
+        parser.print_help()
         sys.exit()
     if not options.filename:
         options.filename = options.url.split('/')[-1]
@@ -262,11 +269,15 @@ if __name__ == '__main__':
             'Cookie': options.cookie
             }
     wget = WGet(headers=headers)
+
     def bye(s, frame):
         print("\nDownload Pause...")
-        wget.dump_download_config()
+        if wget.use_multi_thread:
+            wget.dump_download_config()
         wget.finish = True
         sys.exit(0)
 
     signal.signal(signal.SIGINT, bye)
     wget.download(options.url, options.filename)
+
+
