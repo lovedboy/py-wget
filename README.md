@@ -8,7 +8,7 @@
 
 ```
  cd ~
- git clone https://github.com/phith0n/py-wget.git
+ git clone https://github.com/lovedboy/py-wget.git
  cd py-wget
  chmod u+x py-wget.py
  alias py-wget="`pwd`/py-wget.py"
